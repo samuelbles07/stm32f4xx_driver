@@ -97,6 +97,35 @@ void GPIO_Init(GPIO_Handle_t *pGPIOHandle) {
 
 	} else {
 		// Set IRQ mode
+
+		if (pGPIOHandle->GPIO_PinConfig.GPIO_PinMode == GPIO_MODE_ISR_FALL) {
+			// Configure interrupt fall event
+			EXTI->FTSR |= ( 1 << pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber );
+			// Just to make sure provided pin not in rise event
+			EXTI->RTSR &= ~( 1 << pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber );
+
+		} else if (pGPIOHandle->GPIO_PinConfig.GPIO_PinMode == GPIO_MODE_ISR_RISE) {
+			// Configure interrupt rise event
+			EXTI->RTSR |= ( 1 << pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber );
+			// Just to make sure provided pin not in fall event
+			EXTI->FTSR &= ~( 1 << pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber );
+
+		} else if (pGPIOHandle->GPIO_PinConfig.GPIO_PinMode == GPIO_MODE_ISR_BOTH) {
+			// Configure interrupt for both rise and fall event
+			EXTI->RTSR |= ( 1 << pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber );
+			EXTI->FTSR |= ( 1 << pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber );
+		}
+
+		// Configure the GPIO port selection in SYSCFG_EXTICR
+		uint8_t tmp1 = pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber / 4; // Get index position of EXTICR
+		uint8_t tmp2 = pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber % 4; // Get multiplier of bit position
+		uint8_t bits = GPIO_BASEADDR_TO_EXTICR_BIT(pGPIOHandle->pGPIOx);
+		SYSCFG->EXTICR[tmp1] = bits << (tmp2 * 4); // Set bit of coresponding port
+
+		// Enable SYSCFG peripheral clock
+		SYSCFG_PCLK_EN();
+		// Enable EXTI interrupt delivery using IMR
+		EXTI->IMR |= ( 1 << pGPIOHandle->GPIO_PinConfig.GPIO_PinNumber );
 	}
 
 	// Clear tmp variable
@@ -235,11 +264,64 @@ void GPIO_ToggleOutputPin(GPIO_RegDef_t *pGPIOx, uint8_t pinNumber) {
 }
 
 
-// IRQ Config and handling
-void GPIO_IRQConfig(uint8_t IRQNumber, uint8_t IRQPriority, uint8_t status) {
+/*
+ * Desc		- Configure given IRQ number
+ * Param1	- IRQ number to configure
+ * Param2	- ENABLE or DISABLE IRQ
+ * Param3	- Set priority (if default just set -1)
+ */
+void GPIO_IRQConfig(uint8_t IRQNumber, uint8_t status, uint32_t IRQPriority) {
 
+	if (status == ENABLE) {
+		// Check IRQ Number
+		if (IRQNumber <= 31) { // 0 - 31
+			// Enable ISER0 Register
+			*NVIC_ISER0 |= ( 1 << IRQNumber );
+
+		} else if (IRQNumber > 31 && IRQNumber < 64) { // 32 - 63
+			// Enable ISER1 Register
+			*NVIC_ISER1 |= ( 1 << (IRQNumber % 32) ); // map to 0 - 31 bit of ISER1
+
+		} else if (IRQNumber >= 64 && IRQNumber < 94) {	// 64 - 93
+			// Enable ISER2 Register
+			*NVIC_ISER2 |= ( 1 << (IRQNumber % 64) ); // map to 0 - 31 bit of ISER2
+		}
+	} else {
+		// Check IRQ Number
+		if (IRQNumber <= 31) {
+			// Disable interrupt by set ICER0 Register to 1
+			*NVIC_ICER0 |= (1 << IRQNumber);
+
+		} else if (IRQNumber > 31 && IRQNumber < 64) { // 32 - 63
+		// Disable ICER1 Register
+			*NVIC_ICER1 |= (1 << (IRQNumber % 32));
+
+		} else if (IRQNumber >= 64 && IRQNumber < 94) {	// 64 - 93
+		// Disable ICER2 Register
+			*NVIC_ICER2 |= (1 << (IRQNumber % 64));
+		}
+	}
+
+	/*
+	 * Check 4.2.7 Interrupt Priority Registers of Cortex-M4 Generic User Guide
+	 */
+	if ((int)IRQPriority > -1) {
+		// First, find address that have to be set (Each IPRx have 4 section)
+		// Then, set Priority value by multiply multiplier(iprx_section) by 8 because each section is 8 bit
+		// And because of this "Register priority value fields are eight bits wide, and non-implemented low-order bits read as zero and ignore writes."
+		// So we have to shift Priority value by 4 then we get the shift_amount
+
+		uint8_t iprx = IRQNumber / 4; //1
+		uint8_t iprx_section = IRQNumber % 4; //2
+		uint8_t shift_amount = ( iprx_section * 8 ) + ( 8 - NO_PR_BITS_IMPLEMENTED );
+
+		*(NVIC_PR_BASE_ADDR + iprx) |= ( IRQPriority << shift_amount );
+	}
 }
 
-void GPIO_IRQHandling(uint8_t pinNumber) {
-
+void GPIO_IRQClear(uint8_t pinNumber) {
+	// Clear EXTI PR register for given pin number
+	if (EXTI->PR & ( 1 << pinNumber)) {
+		EXTI->PR |= ( 1 << pinNumber);
+	}
 }
